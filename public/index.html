@@ -1,0 +1,503 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Edge Cache Dashboard</title>
+  <script src="/socket.io/socket.io.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: 'Segoe UI', sans-serif;
+      background: #0B1D3A;
+      color: #E0E0E0;
+      min-height: 100vh;
+    }
+
+    header {
+      background: #0D2348;
+      border-bottom: 2px solid #0097A7;
+      padding: 1rem 2rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    header h1 {
+      font-size: 1.3rem;
+      color: #fff;
+      font-weight: 600;
+    }
+
+    header h1 span { color: #0097A7; }
+
+    .live-badge {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.8rem;
+      color: #00E676;
+    }
+
+    .dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: #00E676;
+      animation: pulse 1.2s infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0.3; }
+    }
+
+    .container { padding: 1.5rem 2rem; }
+
+    /* ── STAT CARDS ── */
+    .stats-row {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 1rem;
+      margin-bottom: 1.5rem;
+    }
+
+    .card {
+      background: #112244;
+      border-radius: 10px;
+      padding: 1.2rem 1.5rem;
+      border: 1px solid #1E3A5F;
+    }
+
+    .card .label {
+      font-size: 0.72rem;
+      color: #90A4AE;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      margin-bottom: 0.5rem;
+    }
+
+    .card .value {
+      font-size: 2.2rem;
+      font-weight: 700;
+      color: #fff;
+    }
+
+    .card .value.green  { color: #00E676; }
+    .card .value.red    { color: #FF5252; }
+    .card .value.cyan   { color: #00BCD4; }
+    .card .value.yellow { color: #FFD740; }
+
+    /* ── MAIN GRID ── */
+    .main-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+      margin-bottom: 1rem;
+    }
+
+    .panel {
+      background: #112244;
+      border-radius: 10px;
+      border: 1px solid #1E3A5F;
+      overflow: hidden;
+    }
+
+    .panel-header {
+      background: #0D2348;
+      padding: 0.75rem 1.2rem;
+      font-size: 0.8rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: #90A4AE;
+      border-bottom: 1px solid #1E3A5F;
+    }
+
+    .panel-body { padding: 1rem; }
+
+    /* ── HIT RATE BAR ── */
+    .hit-bar-wrap {
+      background: #0B1D3A;
+      border-radius: 99px;
+      height: 20px;
+      overflow: hidden;
+      margin: 0.5rem 0;
+    }
+
+    .hit-bar {
+      height: 100%;
+      background: linear-gradient(90deg, #0097A7, #00E676);
+      border-radius: 99px;
+      transition: width 0.5s ease;
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      padding-right: 8px;
+      font-size: 0.72rem;
+      font-weight: 700;
+      color: #fff;
+      min-width: 40px;
+    }
+
+    /* ── REQUEST LOG ── */
+    #request-log {
+      height: 260px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    #request-log::-webkit-scrollbar { width: 4px; }
+    #request-log::-webkit-scrollbar-thumb { background: #1E3A5F; border-radius: 4px; }
+
+    .log-entry {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      background: #0D2348;
+      border-radius: 6px;
+      padding: 0.5rem 0.75rem;
+      font-size: 0.8rem;
+      border-left: 3px solid transparent;
+      animation: slideIn 0.3s ease;
+    }
+
+    @keyframes slideIn {
+      from { opacity: 0; transform: translateX(-10px); }
+      to   { opacity: 1; transform: translateX(0); }
+    }
+
+    .log-entry.HIT   { border-left-color: #00E676; }
+    .log-entry.MISS  { border-left-color: #FF5252; }
+    .log-entry.ERROR { border-left-color: #FF9800; }
+
+    .log-badge {
+      font-size: 0.7rem;
+      font-weight: 700;
+      padding: 2px 8px;
+      border-radius: 4px;
+      min-width: 44px;
+      text-align: center;
+    }
+
+    .badge-HIT   { background: #00C853; color: #000; }
+    .badge-MISS  { background: #FF5252; color: #fff; }
+    .badge-ERROR { background: #FF9800; color: #000; }
+
+    .log-path    { flex: 1; color: #B0BEC5; }
+    .log-latency { color: #FFD740; font-weight: 600; min-width: 55px; text-align: right; }
+    .log-time    { color: #546E7A; font-size: 0.72rem; min-width: 70px; text-align: right; }
+
+    /* ── CACHED KEYS ── */
+    #key-list {
+      height: 260px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .key-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: #0D2348;
+      border-radius: 6px;
+      padding: 0.5rem 0.75rem;
+      font-size: 0.8rem;
+    }
+
+    .key-name { color: #80DEEA; font-family: monospace; }
+
+    .ttl-bar-wrap {
+      width: 80px;
+      background: #0B1D3A;
+      border-radius: 99px;
+      height: 6px;
+      overflow: hidden;
+    }
+
+    .ttl-bar {
+      height: 100%;
+      background: #0097A7;
+      border-radius: 99px;
+      transition: width 0.5s;
+    }
+
+    .ttl-label { font-size: 0.7rem; color: #546E7A; min-width: 40px; text-align: right; }
+
+    /* ── BUTTONS ── */
+    .btn-row {
+      display: flex;
+      gap: 0.75rem;
+      margin-bottom: 1rem;
+      flex-wrap: wrap;
+    }
+
+    button {
+      padding: 0.5rem 1.2rem;
+      border-radius: 6px;
+      border: none;
+      font-size: 0.82rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.2s;
+    }
+
+    button:hover { opacity: 0.85; }
+
+    .btn-primary  { background: #1565C0; color: #fff; }
+    .btn-danger   { background: #C62828; color: #fff; }
+    .btn-cyan     { background: #0097A7; color: #fff; }
+    .btn-secondary{ background: #1E3A5F; color: #90A4AE; }
+
+    /* ── LATENCY CHART ── */
+    #latency-bars {
+      display: flex;
+      align-items: flex-end;
+      gap: 4px;
+      height: 80px;
+      padding-top: 8px;
+    }
+
+    .lat-bar {
+      flex: 1;
+      border-radius: 3px 3px 0 0;
+      transition: height 0.3s;
+      min-height: 4px;
+      position: relative;
+    }
+
+    .lat-bar.hit  { background: #00C853; }
+    .lat-bar.miss { background: #FF5252; }
+
+    .empty-state {
+      color: #546E7A;
+      font-size: 0.82rem;
+      text-align: center;
+      padding: 2rem;
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>Edge Cache <span>Proxy</span> — Live Dashboard</h1>
+  <div class="live-badge"><div class="dot"></div> LIVE</div>
+</header>
+
+<div class="container">
+
+  <!-- STAT CARDS -->
+  <div class="stats-row">
+    <div class="card">
+      <div class="label">Cache Hits</div>
+      <div class="value green" id="stat-hits">0</div>
+    </div>
+    <div class="card">
+      <div class="label">Cache Misses</div>
+      <div class="value red" id="stat-misses">0</div>
+    </div>
+    <div class="card">
+      <div class="label">Hit Rate</div>
+      <div class="value cyan" id="stat-hitrate">0%</div>
+    </div>
+    <div class="card">
+      <div class="label">Keys Cached</div>
+      <div class="value yellow" id="stat-keys">0</div>
+    </div>
+  </div>
+
+  <!-- BUTTONS -->
+  <div class="btn-row">
+    <button class="btn-primary"   onclick="fetchAPI('/api/products')">GET /api/products</button>
+    <button class="btn-primary"   onclick="fetchAPI('/api/news')">GET /api/news</button>
+    <button class="btn-primary"   onclick="fetchAPI('/api/weather')">GET /api/weather</button>
+    <button class="btn-primary"   onclick="fetchAPI('/api/users')">GET /api/users</button>
+    <button class="btn-cyan"      onclick="fetchAll()">Fetch All (4 requests)</button>
+    <button class="btn-danger"    onclick="flushCache()">Flush Cache</button>
+    <button class="btn-secondary" onclick="loadTest()">Load Test (20 req)</button>
+  </div>
+
+  <!-- MAIN GRID -->
+  <div class="main-grid">
+
+    <!-- Request Log -->
+    <div class="panel">
+      <div class="panel-header">Request Log</div>
+      <div class="panel-body">
+        <div id="request-log">
+          <div class="empty-state">No requests yet. Hit a button above.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Cached Keys -->
+    <div class="panel">
+      <div class="panel-header">Cached Keys (TTL countdown)</div>
+      <div class="panel-body">
+        <div id="key-list">
+          <div class="empty-state">Cache is empty.</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- HIT RATE + LATENCY -->
+  <div class="main-grid">
+    <div class="panel">
+      <div class="panel-header">Cache Hit Rate</div>
+      <div class="panel-body">
+        <div style="display:flex; justify-content:space-between; margin-bottom:0.4rem;">
+          <span style="font-size:0.8rem; color:#90A4AE;">Hit Rate</span>
+          <span style="font-size:0.8rem; color:#00E676;" id="bar-label">0%</span>
+        </div>
+        <div class="hit-bar-wrap">
+          <div class="hit-bar" id="hit-bar" style="width:0%">0%</div>
+        </div>
+        <div style="margin-top:1rem; display:flex; gap:1.5rem; font-size:0.8rem; color:#546E7A;">
+          <span>HIT = served from Redis cache</span>
+          <span>MISS = fetched from origin server</span>
+        </div>
+        <div style="margin-top:0.75rem; font-size:0.78rem; color:#546E7A;">
+          LRU Evictions: <span style="color:#FFD740;" id="stat-evictions">0</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">Response Latency (last 20 requests)</div>
+      <div class="panel-body">
+        <div id="latency-bars"><div class="empty-state">No data yet.</div></div>
+        <div style="margin-top:0.5rem; display:flex; gap:1rem; font-size:0.72rem; color:#546E7A;">
+          <span>Cache hit (~5ms)</span>
+          <span>Cache miss (~800ms)</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+  const socket = io();
+  const logEntries = [];
+  const latencyHistory = [];
+
+  // ── SOCKET EVENTS ───────────────────────────
+  socket.on("stats_update", (stats) => {
+    document.getElementById("stat-hits").textContent      = stats.hits;
+    document.getElementById("stat-misses").textContent    = stats.misses;
+    document.getElementById("stat-hitrate").textContent   = stats.hitRate + "%";
+    document.getElementById("stat-keys").textContent      = stats.cachedKeys.length;
+    document.getElementById("stat-evictions").textContent = stats.evictions;
+    document.getElementById("bar-label").textContent      = stats.hitRate + "%";
+
+    const bar = document.getElementById("hit-bar");
+    bar.style.width    = stats.hitRate + "%";
+    bar.textContent    = stats.hitRate + "%";
+
+    renderKeyList(stats.cachedKeys);
+  });
+
+  socket.on("request_event", (event) => {
+    addLogEntry(event);
+    addLatencyBar(event);
+  });
+
+  socket.on("cache_flushed", () => {
+    document.getElementById("request-log").innerHTML =
+      '<div class="empty-state">Cache flushed. All entries cleared.</div>';
+    document.getElementById("key-list").innerHTML =
+      '<div class="empty-state">Cache is empty.</div>';
+    document.getElementById("latency-bars").innerHTML =
+      '<div class="empty-state">No data yet.</div>';
+    latencyHistory.length = 0;
+    logEntries.length     = 0;
+  });
+
+  // ── RENDER FUNCTIONS ────────────────────────
+  function addLogEntry(event) {
+    logEntries.unshift(event);
+    if (logEntries.length > 50) logEntries.pop();
+
+    const log = document.getElementById("request-log");
+    const div = document.createElement("div");
+    div.className = `log-entry ${event.type}`;
+    div.innerHTML = `
+      <span class="log-badge badge-${event.type}">${event.type}</span>
+      <span class="log-path">${event.path}</span>
+      <span class="log-latency">${event.latency}ms</span>
+      <span class="log-time">${event.time}</span>
+    `;
+    if (log.querySelector(".empty-state")) log.innerHTML = "";
+    log.prepend(div);
+    if (log.children.length > 50) log.removeChild(log.lastChild);
+  }
+
+  function addLatencyBar(event) {
+    latencyHistory.push(event);
+    if (latencyHistory.length > 20) latencyHistory.shift();
+
+    const container = document.getElementById("latency-bars");
+    if (container.querySelector(".empty-state")) container.innerHTML = "";
+
+    const maxLatency = Math.max(...latencyHistory.map(e => e.latency), 100);
+    container.innerHTML = "";
+
+    latencyHistory.forEach(e => {
+      const bar = document.createElement("div");
+      const pct = Math.max((e.latency / maxLatency) * 100, 3);
+      bar.className = `lat-bar ${e.type === "HIT" ? "hit" : "miss"}`;
+      bar.style.height = pct + "%";
+      bar.title = `${e.type} ${e.path} — ${e.latency}ms`;
+      container.appendChild(bar);
+    });
+  }
+
+  function renderKeyList(keys) {
+    const list = document.getElementById("key-list");
+    if (!keys || keys.length === 0) {
+      list.innerHTML = '<div class="empty-state">Cache is empty.</div>';
+      return;
+    }
+    list.innerHTML = keys.map(k => `
+      <div class="key-item">
+        <span class="key-name">${k.key}</span>
+        <div class="ttl-bar-wrap">
+          <div class="ttl-bar" style="width:${Math.max((k.ttl / 30) * 100, 0)}%"></div>
+        </div>
+        <span class="ttl-label">${k.ttl}s</span>
+      </div>
+    `).join("");
+  }
+
+  // ── API CALLS ───────────────────────────────
+  async function fetchAPI(path) {
+    try {
+      await fetch(path);
+    } catch(e) { console.error(e); }
+  }
+
+  async function fetchAll() {
+    const paths = ["/api/products", "/api/news", "/api/weather", "/api/users"];
+    for (const p of paths) await fetchAPI(p);
+  }
+
+  async function flushCache() {
+    await fetch("/admin/cache", { method: "DELETE" });
+  }
+
+  async function loadTest() {
+    const paths = ["/api/products", "/api/news", "/api/weather", "/api/users"];
+    for (let i = 0; i < 20; i++) {
+      await fetchAPI(paths[i % paths.length]);
+      await new Promise(r => setTimeout(r, 150));
+    }
+  }
+</script>
+</body>
+</html>
