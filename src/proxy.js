@@ -1,19 +1,19 @@
 //  EDGE PROXY SERVER  -  port 3000
 // Cache Warming on startup
-const express    = require("express");
-const http       = require("http");
+const express = require("express");
+const http = require("http");
 const { Server } = require("socket.io");
-const axios      = require("axios");
-const cron       = require("node-cron");
-const path       = require("path");
-const cache      = require("./cache");
+const axios = require("axios");
+const cron = require("node-cron");
+const path = require("path");
+const cache = require("./cache");
 
-const app    = express();
+const app = express();
 const server = http.createServer(app);
 const io     = new Server(server);
 
 const ORIGIN = "http://localhost:4000";
-const PORT   = 3000;
+const PORT = 3000;
 
 const WARM_ROUTES = [
   "/api/products",
