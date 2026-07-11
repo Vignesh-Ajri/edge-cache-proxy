@@ -247,11 +247,32 @@
     }
 
     button:hover { opacity: 0.85; }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
 
     .btn-primary  { background: #1565C0; color: #fff; }
     .btn-danger   { background: #C62828; color: #fff; }
     .btn-cyan     { background: #0097A7; color: #fff; }
     .btn-secondary{ background: #1E3A5F; color: #90A4AE; }
+    .btn-warm     { background: #6A1B9A; color: #fff; }
+
+    /* ── TOAST ── */
+    #toast {
+      position: fixed;
+      bottom: 1.5rem;
+      right: 1.5rem;
+      background: #1E3A5F;
+      color: #E0E0E0;
+      padding: 0.65rem 1.2rem;
+      border-radius: 8px;
+      font-size: 0.82rem;
+      border-left: 4px solid #6A1B9A;
+      opacity: 0;
+      transform: translateY(10px);
+      transition: opacity 0.3s, transform 0.3s;
+      pointer-events: none;
+      z-index: 999;
+    }
+    #toast.show { opacity: 1; transform: translateY(0); }
 
     /* ── LATENCY CHART ── */
     #latency-bars {
@@ -312,14 +333,16 @@
 
   <!-- BUTTONS -->
   <div class="btn-row">
-    <button class="btn-primary"   onclick="fetchAPI('/api/products')">GET /api/products</button>
-    <button class="btn-primary"   onclick="fetchAPI('/api/news')">GET /api/news</button>
-    <button class="btn-primary"   onclick="fetchAPI('/api/weather')">GET /api/weather</button>
-    <button class="btn-primary"   onclick="fetchAPI('/api/users')">GET /api/users</button>
-    <button class="btn-cyan"      onclick="fetchAll()">Fetch All (4 requests)</button>
-    <button class="btn-danger"    onclick="flushCache()">Flush Cache</button>
-    <button class="btn-secondary" onclick="loadTest()">Load Test (20 req)</button>
+    <button class="btn-primary" onclick="fetchAPI('/api/products')">GET /api/products</button>
+    <button class="btn-primary" onclick="fetchAPI('/api/news')">GET /api/news</button>
+    <button class="btn-primary" onclick="fetchAPI('/api/weather')">GET /api/weather</button>
+    <button class="btn-primary" onclick="fetchAPI('/api/users')">GET /api/users</button>
+    <button class="btn-cyan" onclick="fetchAll()">Fetch All (4 requests)</button>
+    <button class="btn-warm" onclick="rewarmCache()">Re-Warm Cache</button>
+    <button class="btn-danger" onclick="flushCache()">Flush Cache</button>
+    <button class="btn-secondary" id="btn-loadtest" onclick="loadTest()">Load Test (20 req)</button>
   </div>
+  <div id="toast"></div>
 
   <!-- MAIN GRID -->
   <div class="main-grid">
@@ -389,16 +412,16 @@
 
   // ── SOCKET EVENTS ───────────────────────────
   socket.on("stats_update", (stats) => {
-    document.getElementById("stat-hits").textContent      = stats.hits;
-    document.getElementById("stat-misses").textContent    = stats.misses;
-    document.getElementById("stat-hitrate").textContent   = stats.hitRate + "%";
-    document.getElementById("stat-keys").textContent      = stats.cachedKeys.length;
+    document.getElementById("stat-hits").textContent = stats.hits;
+    document.getElementById("stat-misses").textContent = stats.misses;
+    document.getElementById("stat-hitrate").textContent = stats.hitRate + "%";
+    document.getElementById("stat-keys").textContent = stats.cachedKeys.length;
     document.getElementById("stat-evictions").textContent = stats.evictions;
-    document.getElementById("bar-label").textContent      = stats.hitRate + "%";
+    document.getElementById("bar-label").textContent = stats.hitRate + "%";
 
     const bar = document.getElementById("hit-bar");
-    bar.style.width    = stats.hitRate + "%";
-    bar.textContent    = stats.hitRate + "%";
+    bar.style.width = stats.hitRate + "%";
+    bar.textContent = stats.hitRate + "%";
 
     renderKeyList(stats.cachedKeys);
   });
@@ -416,7 +439,12 @@
     document.getElementById("latency-bars").innerHTML =
       '<div class="empty-state">No data yet.</div>';
     latencyHistory.length = 0;
-    logEntries.length     = 0;
+    logEntries.length = 0;
+  });
+
+  socket.on("cache_warmed", (results) => {
+    const ok = results.filter(r => r.status === "warmed").length;
+    showToast(`✓ Cache re-warmed — ${ok}/${results.length} routes ready`);
   });
 
   // ── RENDER FUNCTIONS ────────────────────────
@@ -426,13 +454,27 @@
 
     const log = document.getElementById("request-log");
     const div = document.createElement("div");
-    div.className = `log-entry ${event.type}`;
-    div.innerHTML = `
-      <span class="log-badge badge-${event.type}">${event.type}</span>
-      <span class="log-path">${event.path}</span>
-      <span class="log-latency">${event.latency}ms</span>
-      <span class="log-time">${event.time}</span>
-    `;
+    // Sanitize server values before inserting — guard against reflected XSS
+    const safeType = CSS.escape(String(event.type));
+    div.className = `log-entry ${safeType}`;
+
+    const badge = document.createElement("span");
+    badge.className = `log-badge badge-${safeType}`;
+    badge.textContent = event.type;
+
+    const pathEl = document.createElement("span");
+    pathEl.className = "log-path";
+    pathEl.textContent = event.path; // textContent — never raw HTML
+
+    const latEl = document.createElement("span");
+    latEl.className = "log-latency";
+    latEl.textContent = `${event.latency}ms`;
+
+    const timeEl = document.createElement("span");
+    timeEl.className = "log-time";
+    timeEl.textContent = event.time;
+
+    div.append(badge, pathEl, latEl, timeEl);
     if (log.querySelector(".empty-state")) log.innerHTML = "";
     log.prepend(div);
     if (log.children.length > 50) log.removeChild(log.lastChild);
@@ -460,19 +502,44 @@
 
   function renderKeyList(keys) {
     const list = document.getElementById("key-list");
+    list.innerHTML = "";
     if (!keys || keys.length === 0) {
       list.innerHTML = '<div class="empty-state">Cache is empty.</div>';
       return;
     }
-    list.innerHTML = keys.map(k => `
-      <div class="key-item">
-        <span class="key-name">${k.key}</span>
-        <div class="ttl-bar-wrap">
-          <div class="ttl-bar" style="width:${Math.max((k.ttl / 30) * 100, 0)}%"></div>
-        </div>
-        <span class="ttl-label">${k.ttl}s</span>
-      </div>
-    `).join("");
+    keys.forEach(k => {
+      const item = document.createElement("div");
+      item.className = "key-item";
+
+      const keyName = document.createElement("span");
+      keyName.className = "key-name";
+      keyName.textContent = k.key; // textContent — never raw HTML
+
+      const barWrap = document.createElement("div");
+      barWrap.className = "ttl-bar-wrap";
+
+      const bar = document.createElement("div");
+      bar.className = "ttl-bar";
+      bar.style.width = Math.max((k.ttl / 30) * 100, 0) + "%";
+      barWrap.appendChild(bar);
+
+      const ttlLabel = document.createElement("span");
+      ttlLabel.className = "ttl-label";
+      ttlLabel.textContent = k.ttl + "s"; // textContent — never raw HTML
+
+      item.append(keyName, barWrap, ttlLabel);
+      list.appendChild(item);
+    });
+  }
+
+  // ── TOAST ───────────────────────────────────
+  let toastTimer = null;
+  function showToast(msg) {
+    const t = document.getElementById("toast");
+    t.textContent = msg;
+    t.classList.add("show");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => t.classList.remove("show"), 3000);
   }
 
   // ── API CALLS ───────────────────────────────
@@ -487,15 +554,29 @@
     for (const p of paths) await fetchAPI(p);
   }
 
+  async function rewarmCache() {
+    await fetch("/admin/warm", { method: "POST" });
+  }
+
   async function flushCache() {
+    if (!confirm("Flush all cache? This resets all stats and evicts every key.")) return;
     await fetch("/admin/cache", { method: "DELETE" });
   }
 
   async function loadTest() {
-    const paths = ["/api/products", "/api/news", "/api/weather", "/api/users"];
-    for (let i = 0; i < 20; i++) {
-      await fetchAPI(paths[i % paths.length]);
-      await new Promise(r => setTimeout(r, 150));
+    const btn = document.getElementById("btn-loadtest");
+    if (btn.disabled) return; // prevent concurrent runs
+    btn.disabled = true;
+    btn.textContent = "Running...";
+    try {
+      const paths = ["/api/products", "/api/news", "/api/weather", "/api/users"];
+      for (let i = 0; i < 20; i++) {
+        await fetchAPI(paths[i % paths.length]);
+        await new Promise(r => setTimeout(r, 150));
+      }
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Load Test (20 req)";
     }
   }
 </script>

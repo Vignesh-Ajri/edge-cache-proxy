@@ -1,16 +1,15 @@
 const { createClient } = require("redis");
 
-const DEFAULT_TTL    = 100;
 const MAX_CACHE_KEYS = 20;
 
 class CacheManager {
   constructor() {
-    this.client   = null;
-    this.stats    = {
-      hits:       0,
-      misses:     0,
-      evictions:  0,
-      warmups:    0,
+    this.client = null;
+    this.stats = {
+      hits: 0,
+      misses: 0,
+      evictions: 0,
+      warmups: 0,
     };
     this.warmStatus = {};
   }
@@ -38,7 +37,7 @@ class CacheManager {
     return null;
   }
 
-  async set(key, data, ttl = DEFAULT_TTL) {
+  async set(key, data, ttl) {
     await this._enforceLRU();
     await this.client.setEx(`cache:${key}`, ttl, JSON.stringify(data));
     await this.client.zAdd("cache:lru", [
@@ -65,39 +64,16 @@ class CacheManager {
     }
   }
 
-  // Pre-fetches a list of paths from origin and stores them in Redis
-  // so the very first real user always gets a HIT, not a MISS.
-  async warmUp(paths, fetchFn) {
-    console.log("[Cache] Starting warm-up for", paths.length, "keys...");
-    this.warmStatus = {};
-
-    const results = await Promise.allSettled(
-      paths.map(async (path) => {
-        this.warmStatus[path] = "warming";
-        try {
-          const data = await fetchFn(path);
-          await this.set(path, data, DEFAULT_TTL);
-          this.stats.warmups++;
-          this.warmStatus[path] = "warm";
-          console.log(`[Cache] Warmed: "${path}"`);
-          return { path, ok: true };
-        } catch (err) {
-          this.warmStatus[path] = "failed";
-          console.error(`[Cache] Warm-up failed for "${path}":`, err.message);
-          return { path, ok: false, error: err.message };
-        }
-      })
-    );
-
-    const warmed = results.filter((r) => r.value?.ok).length;
-    console.log(`[Cache] Warm-up complete - ${warmed}/${paths.length} keys ready`);
-    return results.map((r) => r.value);
+  // Called by proxy after a successful warm so isWarmedKey() returns true
+  markWarmed(key) {
+    this.warmStatus[key] = "warm";
+    this.stats.warmups++;
   }
 
   async getStats() {
-    const keys          = await this.client.zRange("cache:lru", 0, -1);
+    const keys = await this.client.zRange("cache:lru", 0, -1);
     const totalRequests = this.stats.hits + this.stats.misses;
-    const hitRate       = totalRequests === 0
+    const hitRate = totalRequests === 0
       ? 0
       : ((this.stats.hits / totalRequests) * 100).toFixed(1);
 
@@ -105,22 +81,22 @@ class CacheManager {
       keys.map(async (k) => {
         const ttl = await this.client.ttl(`cache:${k}`);
         return {
-          key:        k,
+          key: k,
           ttl,
-          warmStatus: this.warmStatus[k] || "normal",  
+          warmStatus: this.warmStatus[k] || "normal",
         };
       })
     );
 
     return {
-      hits:         this.stats.hits,
-      misses:       this.stats.misses,
-      evictions:    this.stats.evictions,
-      warmups:      this.stats.warmups,                
-      hitRate:      parseFloat(hitRate),
-      cachedKeys:   keyDetails,
+      hits: this.stats.hits,
+      misses: this.stats.misses,
+      evictions: this.stats.evictions,
+      warmups: this.stats.warmups,
+      hitRate: parseFloat(hitRate),
+      cachedKeys: keyDetails,
       totalRequests,
-      warmStatus:   this.warmStatus,                   
+      warmStatus: this.warmStatus,
     };
   }
 
@@ -128,7 +104,7 @@ class CacheManager {
     const keys = await this.client.keys("cache:*");
     if (keys.length) await this.client.del(keys);
     await this.client.del("cache:lru");
-    this.stats      = { hits: 0, misses: 0, evictions: 0, warmups: 0 };
+    this.stats = { hits: 0, misses: 0, evictions: 0, warmups: 0 };
     this.warmStatus = {};
     console.log("[Cache] Flushed all cache");
   }
