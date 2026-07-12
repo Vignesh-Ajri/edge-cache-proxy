@@ -10,10 +10,11 @@ const cache = require("./cache");
 
 const app = express();
 const server = http.createServer(app);
-const io     = new Server(server);
+const io = new Server(server);
 
 const ORIGIN = "http://localhost:4000";
 const PORT = 3000;
+const CACHE_TTL = 30; // seconds — single source of truth for all cache.set() calls
 
 const WARM_ROUTES = [
   "/api/products",
@@ -41,12 +42,12 @@ app.post("/admin/warm", async (req, res) => {
 });
 
 app.get(/^\/api\/.*/, async (req, res) => {
-  const key       = req.path;
+  const key = req.path;
   const startTime = Date.now();
-  const cached    = await cache.get(key);
+  const cached = await cache.get(key);
 
   if (cached) {
-    const latency  = Date.now() - startTime;
+    const latency = Date.now() - startTime;
     const isWarmed = cache.isWarmedKey(key);
     console.log(`[Proxy] HIT ${isWarmed ? "(warmed) " : ""}${key}  (${latency}ms)`);
     io.emit("request_event", { type: "HIT", path: key, latency, warmed: isWarmed, time: new Date().toLocaleTimeString() });
@@ -55,9 +56,9 @@ app.get(/^\/api\/.*/, async (req, res) => {
 
   try {
     const response = await axios.get(`${ORIGIN}${key}`);
-    const data     = response.data;
-    const latency  = Date.now() - startTime;
-    await cache.set(key, data, 30);
+    const data = response.data;
+    const latency = Date.now() - startTime;
+    await cache.set(key, data, CACHE_TTL);
     console.log(`[Proxy] MISS ${key}  (${latency}ms)`);
     io.emit("request_event", { type: "MISS", path: key, latency, warmed: false, time: new Date().toLocaleTimeString() });
     return res.json({ ...data, cacheStatus: "MISS", latency });
@@ -74,10 +75,11 @@ async function warmCache() {
   const results = [];
   for (const route of WARM_ROUTES) {
     try {
-      const start    = Date.now();
+      const start = Date.now();
       const response = await axios.get(`${ORIGIN}${route}`);
-      const latency  = Date.now() - start;
-      await cache.set(route, response.data, 30);
+      const latency = Date.now() - start;
+      await cache.set(route, response.data, CACHE_TTL);
+      cache.markWarmed(route);
       results.push({ route, status: "warmed", latency });
       console.log(`[Warm] ✓ ${route}  (${latency}ms)`);
     } catch (err) {
@@ -90,14 +92,24 @@ async function warmCache() {
   return results;
 }
 
+// Broadcast fresh stats every 3 seconds — wrapped in try/catch so a Redis
+// blip doesn't swallow an error silently and stall the dashboard forever.
 cron.schedule("*/3 * * * * *", async () => {
-  const stats = await cache.getStats();
-  io.emit("stats_update", stats);
+  try {
+    const stats = await cache.getStats();
+    io.emit("stats_update", stats);
+  } catch (err) {
+    console.error("[Cron] Failed to emit stats_update:", err.message);
+  }
 });
 
 io.on("connection", async (socket) => {
   console.log("[Dashboard] Client connected");
-  socket.emit("stats_update", await cache.getStats());
+  try {
+    socket.emit("stats_update", await cache.getStats());
+  } catch (err) {
+    console.error("[Socket] Failed to send initial stats:", err.message);
+  }
 });
 
 async function start() {
@@ -109,4 +121,8 @@ async function start() {
   });
 }
 
-start();
+// Catch startup failures (e.g. Redis not running) and exit with a clear message
+start().catch((err) => {
+  console.error("[Fatal] Proxy failed to start:", err.message);
+  process.exit(1);
+});
